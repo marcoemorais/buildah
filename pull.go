@@ -152,32 +152,40 @@ func localImageNameForReference(ctx context.Context, store storage.Store, srcRef
 
 // Pull copies the contents of the image from somewhere else to local storage.
 func Pull(ctx context.Context, imageName string, options PullOptions) error {
-	spec := imageName
 	systemContext := getSystemContext(options.SystemContext, options.SignaturePolicyPath)
-	srcRef, err := alltransports.ParseImageName(spec)
-	if err != nil {
-		if options.Transport == "" {
-			options.Transport = util.DefaultTransport
-		}
-		logrus.Debugf("error parsing image name %q, trying with transport %q: %v", spec, options.Transport, err)
-		transport := options.Transport
-		if transport != util.DefaultTransport {
-			transport = transport + ":"
-		}
-		spec = transport + spec
-		srcRef2, err2 := alltransports.ParseImageName(spec)
-		if err2 != nil {
-			return errors.Wrapf(err2, "error parsing image name %q", imageName)
-		}
-		srcRef = srcRef2
+
+	transport := options.Transport
+	if transport == "" {
+		transport = util.DefaultTransport
 	}
+	boptions := BuilderOptions{
+		FromImage:           imageName,
+		Transport:           transport,
+		SignaturePolicyPath: options.SignaturePolicyPath,
+		SystemContext:       systemContext,
+		PullBlobDirectory:   options.BlobDirectory,
+		ReportWriter:        options.ReportWriter,
+	}
+
 	if options.Quiet {
-		options.ReportWriter = nil // Turns off logging output
+		boptions.ReportWriter = nil // Turns off logging output
 	}
-	var names []string
+	srcRef, img, err := resolveImage(ctx, systemContext, options.Store, boptions)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s\n", img.ID)
+	var errs *multierror.Error
 	if options.AllTags {
 		if srcRef.DockerReference() == nil {
 			return errors.New("Non-docker transport is currently not supported")
+		}
+
+		spec := transport + srcRef.DockerReference().Name()
+		srcRef, err = alltransports.ParseImageName(spec)
+		if err != nil {
+			return errors.Wrapf(err, "error getting repository tags")
 		}
 		tags, err := docker.GetRepositoryTags(ctx, systemContext, srcRef)
 		if err != nil {
@@ -185,27 +193,21 @@ func Pull(ctx context.Context, imageName string, options PullOptions) error {
 		}
 		for _, tag := range tags {
 			name := spec + ":" + tag
-			names = append(names, name)
+			if options.ReportWriter != nil {
+				options.ReportWriter.Write([]byte("Pulling " + name + "\n"))
+			}
+			ref, err := pullImage(ctx, options.Store, name, options, systemContext)
+			if err != nil {
+				errs = multierror.Append(errs, err)
+				continue
+			}
+			img, err := is.Transport.GetStoreImage(options.Store, ref)
+			if err != nil {
+				errs = multierror.Append(errs, err)
+				continue
+			}
+			fmt.Printf("%s\n", img.ID)
 		}
-	} else {
-		names = append(names, spec)
-	}
-	var errs *multierror.Error
-	for _, name := range names {
-		if options.ReportWriter != nil {
-			options.ReportWriter.Write([]byte("Pulling " + name + "\n"))
-		}
-		ref, err := pullImage(ctx, options.Store, name, options, systemContext)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-			continue
-		}
-		img, err := is.Transport.GetStoreImage(options.Store, ref)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-			continue
-		}
-		fmt.Printf("%s\n", img.ID)
 	}
 
 	return errs.ErrorOrNil()

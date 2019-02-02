@@ -98,9 +98,8 @@ func pullCmd(c *cobra.Command, args []string, iopts pullResults) error {
 		SystemContext:       systemContext,
 		BlobDirectory:       iopts.blobCache,
 		AllTags:             iopts.allTags,
-	}
-	if !iopts.quiet {
-		options.ReportWriter = os.Stderr
+		ReportWriter:        os.Stderr,
+		Quiet:               iopts.quiet,
 	}
 
 	return buildah.Pull(getContext(), args[0], options)
